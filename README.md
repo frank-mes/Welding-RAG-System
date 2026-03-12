@@ -1,1 +1,1 @@
-# welding-ai-system
+# welding-rag-system
