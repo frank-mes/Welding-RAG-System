@@ -58,4 +58,75 @@ class WeldingService:
         
         # 补全了之前断掉的 f-string
         time.sleep(1.5) 
-        return f"### 🛡️ 专家建议 (本地库备份)\n\n**缺陷分析**：针对 {material} 的 {defect} 缺陷，可能是热输入不当
+        return f"### 🛡️ 专家建议 (本地库备份)\n\n**缺陷分析**：针对 {material} 的 {defect} 缺陷，可能是热输入不当导致。\n\n**修复建议**：\n1. 清理坡口油脂与氧化皮；\n2. 严格控制层间温度；\n3. 推荐使用小电流多层多道焊。"
+
+# ==========================================
+# 2. DAO LAYER (数据存档)
+# ==========================================
+class WeldingDAO:
+    def __init__(self, token, repo_name):
+        try:
+            self.gh = Github(token)
+            self.repo = self.gh.get_user().get_repo(repo_name)
+            self.valid = True
+        except:
+            self.valid = False
+
+    def save_record(self, material, solution):
+        if not self.valid: return "GitHub 未配置"
+        
+        date_str = datetime.date.today().isoformat()
+        path = f"solutions/{material}_{date_str}.md"
+        content = f"# 焊接专家方案备份\n\n- 材料: {material}\n- 存档日期: {datetime.datetime.now()}\n\n---\n\n{solution}"
+        
+        try:
+            try:
+                contents = self.repo.get_contents(path)
+                self.repo.update_file(path, f"Update {material}", content, contents.sha, branch="main")
+                return f"已更新备份: {path}"
+            except:
+                self.repo.create_file(path, f"Create {material}", content, branch="main")
+                return f"已新建备份: {path}"
+        except Exception as e:
+            return f"同步失败: {str(e)}"
+
+# ==========================================
+# 3. VIEW (Streamlit 界面)
+# ==========================================
+def main():
+    st.set_page_config(page_title="焊接AI专家系统", page_icon="👨‍🏭")
+    st.title("🛡️ 焊接缺陷 AI 诊断中心")
+    st.markdown("---")
+
+    key = st.secrets.get("GEMINI_KEY", "")
+    token = st.secrets.get("GH_TOKEN", "")
+    repo = "welding-rag-system" 
+
+    svc = WeldingService(key)
+
+    with st.container(border=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            material = st.text_input("材料牌号")
+        with col2:
+            defect = st.text_input("缺陷类型")
+
+    if st.button("开始 AI 推理诊断", type="primary", use_container_width=True):
+        if not material or not defect:
+            st.warning("⚠️ 请输入完整信息。")
+            return
+
+        with st.status("正在调取焊接专家模型...") as status:
+            solution = svc.get_solution(material, defect)
+            status.update(label="诊断完成！", state="complete")
+        
+        st.subheader("💡 专家建议方案")
+        st.markdown(solution)
+
+        if token:
+            dao = WeldingDAO(token, repo)
+            save_msg = dao.save_record(material, solution)
+            st.toast(save_msg, icon="💾")
+
+if __name__ == "__main__":
+    main()
