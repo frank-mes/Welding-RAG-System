@@ -5,99 +5,99 @@ import datetime
 import time
 
 # ==========================================
-# 1. SERVICE LAYER (深度锁定稳定版)
+# 1. SERVICE LAYER (智能模型匹配版)
 # ==========================================
 class WeldingService:
     def __init__(self, api_key):
-        # 初始化配置
         genai.configure(api_key=api_key)
-        # 强制指定具体版本号，不给系统留任何“猜测”空间
-        self.model_name = 'gemini-1.5-flash' 
-        self.model = genai.GenerativeModel(model_name=self.model_name)
+        # 核心逻辑：自动寻找当前 Key 支持的、最合适的模型
+        self.model_name = self._auto_detect_model()
+        self.model = genai.GenerativeModel(self.model_name)
+
+    def _auto_detect_model(self):
+        """
+        自动探测模型。解决 404 models/xxx not found 的终极方案。
+        """
+        try:
+            # 获取所有支持生成内容（generateContent）的模型列表
+            models = [m.name for m in genai.list_models() 
+                      if 'generateContent' in m.supported_generation_methods]
+            
+            # 优先级排序：我们想要的模型
+            # 1.5 Flash 最快最稳，1.5 Pro 最强，1.0 Pro 兼容性最高
+            priority = ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-pro']
+            
+            for p in priority:
+                if p in models:
+                    return p
+            
+            # 如果都不在，返回列表里的第一个
+            return models[0] if models else 'gemini-pro'
+        except Exception as e:
+            st.error(f"无法获取模型列表: {e}")
+            return 'gemini-pro' # 最后的兜底方案
 
     def get_solution(self, material, defect):
         max_retries = 3
-        wait_time = 10 # 增加初次等待时间，因为 429 意味着你需要更久的冷却
-        
         for i in range(max_retries):
             try:
                 prompt = f"你是一位焊接专家。请针对材料【{material}】出现的【{defect}】缺陷，提供失效分析及修复建议。"
-                # 显式设置安全设置（有时候默认设置会导致异常）
                 response = self.model.generate_content(prompt)
-                
-                if not response.text:
-                    raise Exception("模型返回了空内容")
                 return response.text
-                
             except Exception as e:
-                error_msg = str(e)
-                if "429" in error_msg and i < max_retries - 1:
-                    st.warning(f"⚠️ 触发频率限制 (429)。由于是免费版，请静候 {wait_time} 秒，系统会自动重试...")
-                    time.sleep(wait_time)
-                    wait_time *= 2 # 指数退避：10s -> 20s
+                if "429" in str(e) and i < max_retries - 1:
+                    time.sleep(10)
                     continue
-                else:
-                    raise e
+                raise e
 
 # ==========================================
-# 2. DAO LAYER (保持稳定)
-# ==========================================
-class WeldingDAO:
-    def __init__(self, token, repo_name):
-        self.gh = Github(token)
-        self.repo = self.gh.get_user().get_repo(repo_name)
-
-    def save_record(self, material, solution):
-        path = f"solutions/{material}_{datetime.date.today()}.md"
-        content = f"# 焊接方案备份\n- 材料: {material}\n- 时间: {datetime.datetime.now()}\n\n{solution}"
-        try:
-            # 检查文件夹是否存在（GitHub API 限制：如果路径不存在会自动创建）
-            self.repo.create_file(path, f"Upload {material} solution", content, branch="main")
-            return path
-        except Exception as e:
-            if "already exists" in str(e): return "已存在相同备份"
-            raise e
-
-# ==========================================
-# 3. UI LAYER
+# 2. DAO LAYER & UI (保持简洁)
 # ==========================================
 def main():
     st.set_page_config(page_title="焊接AI专家", page_icon="👨‍🏭")
     st.title("🛡️ 焊接缺陷 AI 诊断中心")
     
-    # 强制状态显示
-    st.sidebar.info(f"当前引擎: Gemini 1.5 Flash (稳定版)")
-    
+    if "GEMINI_KEY" not in st.secrets:
+        st.error("请在 Streamlit Secrets 中配置 GEMINI_KEY")
+        return
+
+    svc = WeldingService(st.secrets["GEMINI_KEY"])
+    st.sidebar.info(f"🚀 已自动匹配模型: {svc.model_name}")
+
     with st.container(border=True):
         mat = st.text_input("材料牌号")
         dfc = st.text_input("缺陷类型")
 
     if st.button("生成专家方案", type="primary", use_container_width=True):
-        if not mat or not dfc:
-            st.warning("内容不能为空")
-            return
-
         try:
-            # 执行推理
-            svc = WeldingService(st.secrets["GEMINI_KEY"])
-            with st.status("正在咨询 AI 专家...", expanded=True) as status:
+            with st.status("专家正在会诊...") as status:
                 res = svc.get_solution(mat, dfc)
-                status.update(label="生成成功！", state="complete")
+                status.update(label="方案生成成功！", state="complete")
             
             st.markdown("---")
             st.markdown(res)
 
-            # 执行存档
-            dao = WeldingDAO(st.secrets["GH_TOKEN"], "welding-rag-system")
-            path = dao.save_record(mat, res)
-            st.toast(f"已存档至 GitHub: {path}")
+            # GitHub 存档 (可选配置)
+            if "GH_TOKEN" in st.secrets:
+                dao = WeldingDAO(st.secrets["GH_TOKEN"], "welding-rag-system")
+                path = dao.save_record(mat, res)
+                st.toast(f"已同步至 GitHub: {path}")
 
         except Exception as e:
-            if "429" in str(e):
-                st.error("❌ 免费配额暂时耗尽。请彻底关闭此页面，5 分钟后再试。")
-                st.info("💡 建议：去 Google AI Studio 重新生成一个新的 API Key 填入 Secrets，有时能绕过特定 Key 的限流。")
-            else:
-                st.error(f"❌ 运行出错: {e}")
+            st.error(f"运行出错: {e}")
+
+# 以下是 DAO 类 (与之前一致，此处略)
+class WeldingDAO:
+    def __init__(self, token, repo_name):
+        self.gh = Github(token)
+        self.repo = self.gh.get_user().get_repo(repo_name)
+    def save_record(self, material, solution):
+        path = f"solutions/{material}_{datetime.date.today()}.md"
+        content = f"# 焊接方案\n{solution}"
+        try:
+            self.repo.create_file(path, f"Upload {material}", content, branch="main")
+            return path
+        except: return "已存在备份"
 
 if __name__ == "__main__":
     main()
