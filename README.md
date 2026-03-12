@@ -1,1 +1,1 @@
-# welding-rag-system
+# Welding-RAG-System
