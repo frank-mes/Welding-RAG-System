@@ -4,6 +4,6 @@ emoji: 👨‍🏭
 colorFrom: blue
 colorTo: red
 sdk: streamlit
-app_file: streamlit_app.py
+app_file: app.py
 pinned: false
 ---
