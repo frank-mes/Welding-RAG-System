@@ -1,12 +1,13 @@
-name: Sync to Hugging Face
+name: Sync to Hugging Face Hub
+
 on:
   push:
     branches: [main]
-  # 允许手动触发同步
+  # 允许在 GitHub Actions 界面上手动触发同步
   workflow_dispatch:
 
 jobs:
-  sync:
+  sync-to-hub:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -19,7 +20,8 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # 步骤说明：将远程仓库添加为名为 'hf' 的远程源，然后强制推送
-          # 请将下方 <YOUR_HF_USERNAME> 修改为你的 Hugging Face 用户名
-          git remote add hf https://YOUR_HF_USERNAME:$HF_TOKEN@huggingface.co/spaces/YOUR_HF_USERNAME/Welding-Rag-System
+          # 设置远程仓库地址，包含认证 Token
+          git remote add hf https://frankmes:$HF_TOKEN@huggingface.co/spaces/frankmes/welding-rag-system
+          
+          # 强制推送到 Hugging Face 的 main 分支
           git push --force hf main
