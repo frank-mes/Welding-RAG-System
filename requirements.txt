@@ -1,3 +1,8 @@
+# 基础 UI 框架
 streamlit
+
+# Google Gemini 大模型官方 SDK
 google-generativeai
+
+# GitHub API 操作库（用于存档 .md 报告）
 PyGithub
