@@ -1,9 +1,8 @@
 ---
-title: Welding Expert AI
+title: Welding RAG System
 emoji: 👨‍🏭
-colorFrom: blue
-colorTo: red
 sdk: streamlit
-app_file: app.py
-pinned: false
 ---
+
+# Welding RAG System
+Professional AI system for welding defect diagnosis.
