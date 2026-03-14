@@ -21,7 +21,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           # 设置远程仓库地址，包含认证 Token
-          git remote add hf https://frankmes:$HF_TOKEN@huggingface.co/spaces/frankmes/welding-rag-system
+          git remote add hf https://frank-mes:$HF_TOKEN@huggingface.co/spaces/frank-mes/welding-rag-system
           
           # 强制推送到 Hugging Face 的 main 分支
           git push --force hf main
