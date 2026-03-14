@@ -4,30 +4,23 @@ from github import Github
 import datetime
 import time
 import random
+import os
 from itertools import cycle
 
 # ==========================================
 # 1. SERVICE LAYER (智能引擎层)
 # ==========================================
 class WeldingService:
-    def __init__(self, api_keys):
-        """
-        api_keys: 传入一个列表，例如 ["key1", "key2"]
-        """
+    def __init__(self, api_keys_str):
         self.api_enabled = False
         self.model_name = "None"
         self.working_keys = []
         
-        if not api_keys:
-            return
-
-        # 过滤并验证 API Keys
-        for key in api_keys:
-            if len(key.strip()) > 10:
-                self.working_keys.append(key.strip())
+        # 解析密钥列表
+        if api_keys_str:
+            self.working_keys = [k.strip() for k in api_keys_str.split(",") if len(k.strip()) > 10]
         
         if self.working_keys:
-            # 创建 Key 轮询器
             self.key_cycle = cycle(self.working_keys)
             self._reconfigure_engine()
 
@@ -36,7 +29,7 @@ class WeldingService:
         current_key = next(self.key_cycle)
         try:
             genai.configure(api_key=current_key)
-            # 自动探测最新可用模型
+            # 自动探测可用模型
             models = [m.name for m in genai.list_models() 
                      if 'generateContent' in m.supported_generation_methods]
             
@@ -47,151 +40,162 @@ class WeldingService:
                 self.model = genai.GenerativeModel(self.model_name)
                 self.api_enabled = True
         except Exception as e:
-            st.sidebar.error(f"❌ Key 初始化失败: {str(e)[:50]}")
+            self.init_error = str(e)
 
     def get_solution(self, material, defect):
         if not self.api_enabled:
             return self.get_mock_response(material, defect)
 
-        max_retries = len(self.working_keys) * 2  # 根据 Key 的数量决定重试次数
-        wait_time = 5 
+        # 尝试次数为 Key 数量的 2 倍
+        max_retries = len(self.working_keys) * 2
+        wait_time = 15 # 初始冷却时间略微拉长，应对共享 IP 限制
         
         prompt = f"""你是一位资深国际焊接工程师(IWE)。
-针对材料【{material}】的【{defect}】缺陷进行深度分析。
-要求包含：焊接性分析、成因(微观组织)、预热/层间/后热参数、推荐焊材、保护气比例。
-请用专业 Markdown 格式输出。"""
+请针对材料【{material}】的【{defect}】缺陷进行深度分析。
+要求：
+1. 分析该材料的焊接性及缺陷成因（涉及微观组织）。
+2. 给出具体的预热温度、层间温度和后热(PWHT)参数。
+3. 列出推荐的焊材型号及保护气体配比。
+请使用专业的 Markdown 格式输出，重要参数请加粗或使用表格。"""
 
         for i in range(max_retries):
             try:
-                # 随机微小延迟，错开高并发请求
-                time.sleep(random.uniform(0.5, 1.5)) 
+                # 随机微延迟，错开并发峰值
+                time.sleep(random.uniform(1.0, 3.0))
                 
                 response = self.model.generate_content(prompt)
                 
-                # 安全提取：防止由于 Gemini 安全过滤导致的 ValueError
+                # 安全提取文本：处理 Gemini 的安全拦截抛出的 ValueError
                 try:
                     return response.text
                 except ValueError:
-                    return f"⚠️ **AI 警告**：内容因安全策略被拦截，请尝试更专业的术语表述。\n\n{self.get_mock_response(material, defect)}"
+                    st.warning("⚠️ 检测到敏感内容拦截，已切换至基础方案。")
+                    return self.get_mock_response(material, defect)
                 
             except Exception as e:
-                err_str = str(e)
-                # 如果触发 429 频率限制，尝试轮换 Key
-                if "429" in err_str:
-                    st.warning(f"🔄 节点繁忙，正在尝试切换备用引擎 (尝试 {i+1}/{max_retries})...")
-                    self._reconfigure_engine() # 切换 Key
+                err_msg = str(e)
+                if "429" in err_msg and i < max_retries - 1:
+                    st.warning(f"🔄 节点繁忙，正在切换备用引擎并冷却 (尝试 {i+1}/{max_retries})...")
+                    self._reconfigure_engine() # 核心：切换到下一个 Key
                     time.sleep(wait_time)
-                    wait_time += 5
+                    wait_time += 10 # 递增冷却
                     continue
                 else:
-                    st.error(f"❌ 引擎异常: {err_str[:100]}")
+                    st.error(f"❌ AI 引擎响应异常: {err_msg[:100]}")
                     break
         
         return self.get_mock_response(material, defect)
 
     def get_mock_response(self, material, defect):
-        return f"""### 🛡️ 专家建议 (本地专家库)
-**当前 AI 引擎响应超时或受到限流，已自动匹配标准工艺预案：**
+        """本地兜底方案库"""
+        return f"""### 🛡️ 专家建议 (本地库备份)
+**注意**：当前 AI 引擎繁忙或受到云端限制，为您自动匹配基础修复方案。
 
-1. **成因分析 ({material})**：
-   - 该材料在焊接过程中，{defect} 通常与热循环控制、氢致裂纹敏感性或低熔点共晶物偏析有关。
-2. **推荐工艺参数**：
-   - **预热温度**：150°C - 200°C（具体视板厚而定）。
-   - **焊接能量**：建议采用小电流、多层多道焊，严格控制线能量。
-   - **后热处理**：焊后立即进行 250°C x 2h 消氢处理。
-3. **焊接材料**：
-   - 建议选用与母材匹配的低氢型焊材，并严格执行烘干工艺。"""
+**针对 {material} 的 {defect} 分析**：
+1. **成因**：通常与热输入量控制不当、冷却速度过快或母材淬硬倾向有关。
+2. **工艺建议**：
+    - **预热**：建议温度控制在 150°C-250°C 之间。
+    - **热输入**：采用小电流、多层多道焊，控制层间温度。
+    - **消氢**：焊后立即执行 250°C x 2h 后热处理。
+3. **检验**：建议进行 100% 超声波探伤 (UT) 或磁粉探伤 (MT)。"""
 
 # ==========================================
-# 2. DATA LAYER (GitHub 存档)
+# 2. DAO LAYER (数据持久化)
 # ==========================================
 class WeldingDAO:
-    def __init__(self, token, repo_name):
+    def __init__(self, token, repo_full_path):
         self.valid = False
-        if token and repo_name:
+        if token and "/" in repo_full_path:
             try:
                 self.gh = Github(token)
-                self.repo = self.gh.get_user().get_repo(repo_name)
+                self.repo = self.gh.get_repo(repo_full_path)
                 self.valid = True
             except:
-                pass
+                self.valid = False
 
     def save_record(self, material, solution):
-        if not self.valid: return "⚠️ GitHub 存档未配置"
+        if not self.valid: return "⚠️ GitHub 存档未配置或权限不足"
         
-        path = f"solutions/{material}_{datetime.date.today()}.md"
-        content = f"# 焊接诊断报告\n\n- 生成时间: {datetime.datetime.now()}\n- 材料: {material}\n\n---\n\n{solution}"
+        date_str = datetime.date.today().isoformat()
+        path = f"solutions/{material}_{date_str}.md"
+        content = f"# 焊接专家诊断报告\n\n- 材料: {material}\n- 生成日期: {datetime.datetime.now()}\n\n---\n\n{solution}"
         
         try:
             try:
-                item = self.repo.get_contents(path)
-                self.repo.update_file(path, f"Update {material}", content, item.sha)
-                return "✅ 云端档案已更新"
+                contents = self.repo.get_contents(path)
+                self.repo.update_file(path, f"Update {material}", content, contents.sha, branch="main")
+                return f"✅ 已更新云端档案: {path}"
             except:
-                self.repo.create_file(path, f"Create {material}", content)
-                return "✅ 云端档案已新建"
+                self.repo.create_file(path, f"Create {material}", content, branch="main")
+                return f"✅ 已新建云端档案: {path}"
         except Exception as e:
-            return f"❌ 同步失败: {str(e)[:30]}"
+            return f"❌ 同步失败: {str(e)[:50]}"
 
 # ==========================================
-# 3. UI LAYER (界面与缓存控制)
+# 3. UI LAYER (应用主逻辑)
 # ==========================================
+
+# 缓存资源，防止 Streamlit 频繁刷新导致 API 被封
 @st.cache_resource
-def get_service(keys_str):
-    # 将输入的逗号分隔的 Key 字符串转为列表
-    keys = keys_str.split(",") if keys_str else []
-    return WeldingService(keys)
+def init_welding_service(api_keys):
+    return WeldingService(api_keys)
 
 def main():
-    st.set_page_config(page_title="焊接RAG专家系统", page_icon="👨‍🏭")
+    st.set_page_config(page_title="焊接AI专家系统", page_icon="👨‍🏭", layout="centered")
     
     st.title("🛡️ 焊接缺陷 AI 诊断中心")
-    st.caption("AI 辅助决策系统 | 工业级双引擎版本")
+    st.caption("工业级 AI 辅助决策系统 | 基于 Hugging Face 容器部署")
+    st.markdown("---")
 
-    # 1. 获取 Secrets (支持单 Key 或逗号分隔的多 Key)
-    gemini_keys_raw = st.secrets.get("GEMINI_KEY", "")
-    gh_token = st.secrets.get("GH_TOKEN", "")
-    repo_name = st.secrets.get("REPO_NAME", "welding-rag-system")
+    # 兼容性读取配置 (Hugging Face Secrets / Streamlit Secrets)
+    gemini_keys = os.environ.get("GEMINI_KEY") or st.secrets.get("GEMINI_KEY", "")
+    gh_token = os.environ.get("GH_TOKEN") or st.secrets.get("GH_TOKEN", "")
+    repo_name = os.environ.get("REPO_NAME") or st.secrets.get("REPO_NAME", "frank-mes/Welding-RAG-System")
 
-    # 2. 初始化引擎
-    svc = get_service(gemini_keys_raw)
-    
-    # 侧边栏
+    # 初始化服务
+    svc = init_welding_service(gemini_keys)
+
+    # 侧边栏显示状态
     with st.sidebar:
-        st.header("系统状态")
+        st.header("系统运行状态")
         if svc.api_enabled:
             st.success(f"在线：{svc.model_name}")
-            st.info(f"可用备用节点数: {len(svc.working_keys)}")
+            st.info(f"备用引擎数: {len(svc.working_keys)}")
         else:
-            st.error("离线：AI 引擎未就绪")
+            st.error("离线：AI 引擎初始化失败")
+            if hasattr(svc, 'init_error'):
+                st.caption(f"错误信息: {svc.init_error}")
         st.divider()
-        st.markdown("⚠️ **提示**：如果频繁出现冷却，请在 Secrets 中添加更多 API Key。")
+        st.caption("建议配置多个 API Key 以应对频率限制。")
 
-    # 3. 主界面布局
+    # 输入区域
     with st.container(border=True):
-        c1, c2 = st.columns(2)
-        material = c1.text_input("材料牌号", placeholder="例如: S32205")
-        defect = c2.text_input("缺陷类型", placeholder="例如: 夹杂")
+        col1, col2 = st.columns(2)
+        with col1:
+            material = st.text_input("材料牌号", placeholder="如: Q345R / S32205")
+        with col2:
+            defect = st.text_input("缺陷类型", placeholder="如: 氢致裂纹 / 夹杂")
 
     if st.button("开始 AI 推理诊断", type="primary", use_container_width=True):
         if not material or not defect:
-            st.warning("请完整填写信息。")
+            st.warning("⚠️ 请输入完整的信息。")
             return
 
-        # 进度展示
-        with st.status("正在调取云端专家知识库...", expanded=True) as status:
+        with st.status("正在连接 AI 专家引擎并检索工艺规范...", expanded=True) as status:
             solution = svc.get_solution(material, defect)
             status.update(label="诊断报告生成完毕！", state="complete")
-
+        
+        # 显示结果
         st.markdown("---")
         st.subheader("💡 专家建议方案")
         st.markdown(solution)
 
-        # 4. 执行异步存档
+        # 存档至 GitHub
         if gh_token:
             dao = WeldingDAO(gh_token, repo_name)
-            msg = dao.save_record(material, solution)
-            st.toast(msg)
+            with st.spinner("正在将报告同步至 GitHub 仓库..."):
+                save_msg = dao.save_record(material, solution)
+                st.toast(save_msg)
 
 if __name__ == "__main__":
     main()
